@@ -3,7 +3,8 @@ import { instanceDb } from '../api/db';
 import { ContractInstance, VariableValues } from '../types/contract-instance';
 import { ContractStatus } from '../types/enums';
 import { Template } from '../types/template';
-import { makeId, nowIso, putRecord } from '../utils/db';
+import { Version } from '../types/version';
+import { makeId, nowIso, putRecord, restoreInstanceToDraft } from '../utils/db';
 import { seedInstances } from '../utils/seed';
 import { replaceVariables } from '../hooks/useVariableReplace';
 
@@ -15,6 +16,7 @@ interface InstanceState {
   updateInstance: (instance: ContractInstance) => Promise<void>;
   deleteInstance: (id: string) => Promise<void>;
   setInstanceStatus: (id: string, status: ContractStatus) => Promise<void>;
+  restoreFromVersion: (version: Version) => Promise<ContractInstance>;
 }
 
 function sortInstances(instances: ContractInstance[]) {
@@ -89,5 +91,17 @@ export const useInstanceStore = create<InstanceState>((set, get) => ({
     }
 
     await get().updateInstance({ ...instance, status });
+  },
+
+  async restoreFromVersion(version) {
+    const instance = get().instances.find((item) => item.id === version.contractInstanceId);
+    if (!instance) {
+      throw new Error('合同实例不存在，本次恢复未生效');
+    }
+
+    // 以当前内存中的 updatedAt 作为乐观锁：若草稿已被别处改动，事务内校验会失败
+    const restored = await restoreInstanceToDraft(instance.id, version.id, instance.updatedAt);
+    set((state) => ({ instances: upsertInstance(state.instances, restored) }));
+    return restored;
   }
 }));

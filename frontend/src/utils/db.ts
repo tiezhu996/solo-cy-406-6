@@ -1,6 +1,7 @@
 import { openDB, IDBPDatabase } from 'idb';
 import { Clause } from '../types/clause';
 import { ContractInstance } from '../types/contract-instance';
+import { ContractStatus } from '../types/enums';
 import { Template } from '../types/template';
 import { Version } from '../types/version';
 
@@ -72,6 +73,62 @@ export async function putRecord<S extends StoreName>(storeName: S, record: Store
 export async function deleteRecord(storeName: StoreName, id: string) {
   const db = await getDb();
   await db.delete(storeName, id);
+}
+
+/**
+ * 把某个版本的变量和正文快照写回草稿实例。
+ * 读取、校验、写入在同一个事务内完成：版本被删、实例已非草稿、
+ * 或草稿在别处被改动（updatedAt 不一致）时整体中止，当前内容保持不变。
+ */
+export async function restoreInstanceToDraft(
+  instanceId: string,
+  versionId: string,
+  expectedUpdatedAt: string
+): Promise<ContractInstance> {
+  const db = await getDb();
+  const tx = db.transaction(['instances', 'versions'], 'readwrite');
+  const instanceStore = tx.objectStore('instances');
+  const versionStore = tx.objectStore('versions');
+
+  try {
+    const [instance, version] = (await Promise.all([instanceStore.get(instanceId), versionStore.get(versionId)])) as [
+      ContractInstance | undefined,
+      Version | undefined
+    ];
+
+    if (!instance) {
+      throw new Error('合同实例不存在，本次恢复未生效');
+    }
+    if (!version || version.contractInstanceId !== instanceId) {
+      throw new Error('所选版本不存在，本次恢复未生效');
+    }
+    if (instance.status !== ContractStatus.Draft) {
+      throw new Error('仅草稿状态的合同可以恢复，本次恢复未生效');
+    }
+    if (instance.updatedAt !== expectedUpdatedAt) {
+      throw new Error('草稿已在别处被修改，本次恢复未生效，请刷新后重试');
+    }
+
+    const restored: ContractInstance = {
+      ...instance,
+      variableValues: { ...version.variableSnapshot },
+      finalHtml: version.contentSnapshot,
+      updatedAt: nowIso()
+    };
+
+    await instanceStore.put(restored);
+    await tx.done;
+    return restored;
+  } catch (error) {
+    try {
+      tx.abort();
+      // 中止后 done 会以 AbortError 拒绝，在此吞掉，避免未处理的 rejection
+      await tx.done;
+    } catch {
+      // 事务已结束或已中止，忽略
+    }
+    throw error;
+  }
 }
 
 export async function clearStore(storeName: StoreName) {
