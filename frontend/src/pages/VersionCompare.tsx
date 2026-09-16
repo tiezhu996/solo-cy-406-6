@@ -52,8 +52,12 @@ export function VersionCompare() {
 
     setRestoring(true);
     try {
-      await restoreFromVersion(version);
-      Message.success(`已将版本 ${version.versionNo} 的变量和正文恢复到草稿`);
+      const restored = await restoreFromVersion(version);
+      Message.success(
+        restored.restoredVersionNo != null
+          ? `已将版本 ${version.versionNo} 恢复到草稿；模板已有更新，编辑页将显示该版保存时的正文`
+          : `已将版本 ${version.versionNo} 的变量和正文恢复到草稿`
+      );
       navigate(`/instances/${instance.id}`);
     } catch (error) {
       Message.error(error instanceof Error ? error.message : '恢复失败，当前草稿内容未变更');

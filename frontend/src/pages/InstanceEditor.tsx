@@ -1,4 +1,4 @@
-import { Button, Input, Message, Select, Space, Typography } from '@arco-design/web-react';
+import { Alert, Button, Input, Message, Select, Space, Typography } from '@arco-design/web-react';
 import { IconHistory, IconSave } from '@arco-design/web-react/icon';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -15,6 +15,12 @@ const statusOptions = Object.values(ContractStatus).map((value) => ({
   label: CONTRACT_STATUS_LABELS[value],
   value
 }));
+
+function sameVariableValues(a: VariableValues, b: VariableValues) {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  return aKeys.length === bKeys.length && aKeys.every((key) => a[key] === b[key]);
+}
 
 export function InstanceEditor() {
   const { id } = useParams();
@@ -33,7 +39,7 @@ export function InstanceEditor() {
 
   const instance = useMemo(() => instances.find((item) => item.id === id), [id, instances]);
   const template = useMemo(() => templates.find((item) => item.id === instance?.templateId), [instance?.templateId, templates]);
-  const previewHtml = useVariableReplace(template, values);
+  const livePreviewHtml = useVariableReplace(template, values);
 
   useEffect(() => {
     if (instance) {
@@ -47,12 +53,21 @@ export function InstanceEditor() {
     return <div className="empty-state">正在加载合同实例...</div>;
   }
 
+  // 恢复到历史版本且模板已变更时，变量未被改动前展示该版保存时的正文，
+  // 而不是按新模板重新生成的内容；一旦修改变量则切换为当前模板的实时预览。
+  const restoredVersionNo = instance.restoredVersionNo;
+  const valuesDirty = !sameVariableValues(values, instance.variableValues);
+  const showRestoredSnapshot = restoredVersionNo != null && !valuesDirty;
+  const previewHtml = showRestoredSnapshot ? instance.finalHtml : livePreviewHtml;
+
   const buildNextInstance = () => ({
     ...instance,
     title: title || instance.title,
     variableValues: values,
     finalHtml: previewHtml,
-    status
+    status,
+    // 仍展示历史快照的保存保留恢复标记；内容已基于当前模板重新生成时清除
+    restoredVersionNo: showRestoredSnapshot ? restoredVersionNo : undefined
   });
 
   const saveInstance = async () => {
@@ -98,8 +113,24 @@ export function InstanceEditor() {
         <Input value={remark} onChange={setRemark} placeholder="版本备注，例如：客户首轮修改" />
       </div>
 
+      {restoredVersionNo != null && (
+        <Alert
+          style={{ marginBottom: 16 }}
+          type="info"
+          content={
+            showRestoredSnapshot
+              ? `当前显示版本 ${restoredVersionNo} 保存时的正文；模板在此之后已有更新，修改变量后将基于当前模板重新生成。`
+              : `模板已有更新，当前预览基于最新模板，与版本 ${restoredVersionNo} 保存时的正文不同；重新保存前历史版本内容保持不变。`
+          }
+        />
+      )}
+
       <div className="instance-grid">
-        <ContractPreview title={title || instance.title} html={previewHtml} />
+        <ContractPreview
+          title={title || instance.title}
+          html={previewHtml}
+          hint={showRestoredSnapshot ? `版本 ${restoredVersionNo} 保存时的正文` : undefined}
+        />
         <div className="form-panel">
           <Typography.Title heading={5}>变量填写</Typography.Title>
           <VariableForm variables={template.variables} values={values} onChange={setValues} />

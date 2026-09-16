@@ -1,4 +1,5 @@
 import { openDB, IDBPDatabase } from 'idb';
+import { replaceVariables } from '../hooks/useVariableReplace';
 import { Clause } from '../types/clause';
 import { ContractInstance } from '../types/contract-instance';
 import { ContractStatus } from '../types/enums';
@@ -79,6 +80,8 @@ export async function deleteRecord(storeName: StoreName, id: string) {
  * 把某个版本的变量和正文快照写回草稿实例。
  * 读取、校验、写入在同一个事务内完成：版本被删、实例已非草稿、
  * 或草稿在别处被改动（updatedAt 不一致）时整体中止，当前内容保持不变。
+ * 模板在该版本保存后被改过（或已删除）时，标记 restoredVersionNo，
+ * 编辑页据此展示版本原文，而不是按新模板重新生成的内容。
  */
 export async function restoreInstanceToDraft(
   instanceId: string,
@@ -86,9 +89,10 @@ export async function restoreInstanceToDraft(
   expectedUpdatedAt: string
 ): Promise<ContractInstance> {
   const db = await getDb();
-  const tx = db.transaction(['instances', 'versions'], 'readwrite');
+  const tx = db.transaction(['instances', 'versions', 'templates'], 'readwrite');
   const instanceStore = tx.objectStore('instances');
   const versionStore = tx.objectStore('versions');
+  const templateStore = tx.objectStore('templates');
 
   try {
     const [instance, version] = (await Promise.all([instanceStore.get(instanceId), versionStore.get(versionId)])) as [
@@ -109,10 +113,15 @@ export async function restoreInstanceToDraft(
       throw new Error('草稿已在别处被修改，本次恢复未生效，请刷新后重试');
     }
 
+    const template = (await templateStore.get(instance.templateId)) as Template | undefined;
+    // 用当前模板对版本变量重新生成，与版本快照不一致即视为模板已变更
+    const templateDiverged = replaceVariables(template, version.variableSnapshot) !== version.contentSnapshot;
+
     const restored: ContractInstance = {
       ...instance,
       variableValues: { ...version.variableSnapshot },
       finalHtml: version.contentSnapshot,
+      restoredVersionNo: templateDiverged ? version.versionNo : undefined,
       updatedAt: nowIso()
     };
 
